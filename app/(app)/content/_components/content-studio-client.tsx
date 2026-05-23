@@ -1,7 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
-import { CheckCircle, Copy, Loader2, ShieldCheck } from "lucide-react";
+import { CheckCircle, Copy, Loader2, ShieldCheck, Wand2 } from "lucide-react";
 import type { ContentDraft } from "@/lib/db/schema/content";
 import type { ComplianceFlag } from "@/lib/compliance/filter";
 import { CONTENT_TYPES, type Platform } from "@/lib/content/prompt-builder";
@@ -12,7 +12,7 @@ import { ContentTypeSelector } from "./content-type-selector";
 import { ComplianceFlagList } from "./compliance-flag-list";
 import { DraftList } from "./draft-list";
 
-type StudioState = "idle" | "generating" | "generated" | "checking" | "checked" | "exported";
+type StudioState = "idle" | "generating" | "generated" | "checking" | "checked" | "revising" | "exported";
 
 export function ContentStudioClient({ initialDrafts }: { initialDrafts: ContentDraft[] }) {
   const { t } = useLanguage();
@@ -91,6 +91,28 @@ export function ContentStudioClient({ initialDrafts }: { initialDrafts: ContentD
     setFlags(body.data.flags);
     setModificationScore(body.data.modificationScore);
     setState("checked");
+  }
+
+  async function revise() {
+    if (!draftId) return;
+    setState("revising");
+    setMessage(null);
+    const response = await fetch("/api/content/revise", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ draftId, userDraft, flags }),
+    });
+    const body = (await response.json()) as { data?: { revisedContent: string }; error?: string };
+    if (!response.ok || !body.data) {
+      setMessage(body.error ?? "Revision failed");
+      setState("checked");
+      return;
+    }
+    setUserDraft(body.data.revisedContent);
+    setComplianceStatus("pending");
+    setFlags([]);
+    setState("generated");
+    setMessage(t.aiRevisedNotice);
   }
 
   async function exportDraft() {
@@ -206,12 +228,34 @@ export function ContentStudioClient({ initialDrafts }: { initialDrafts: ContentD
           <button
             type="button"
             onClick={check}
-            disabled={!draftId || state === "checking"}
+            disabled={!draftId || state === "checking" || state === "revising"}
             className="inline-flex items-center gap-2 rounded-md border border-border px-4 py-2 text-sm font-medium disabled:opacity-50"
           >
             {state === "checking" ? <Loader2 className="h-4 w-4 animate-spin" /> : <ShieldCheck className="h-4 w-4" />}
             {t.checkCompliance}
           </button>
+
+          {complianceStatus === "flagged" && (
+            <button
+              type="button"
+              onClick={revise}
+              disabled={state === "revising" || state === "checking"}
+              className="inline-flex items-center gap-2 rounded-md border border-amber-400 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-800 hover:bg-amber-100 disabled:opacity-50 dark:border-amber-600 dark:bg-amber-950/30 dark:text-amber-300 dark:hover:bg-amber-950/50"
+            >
+              {state === "revising" ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  {t.aiRevising}
+                </>
+              ) : (
+                <>
+                  <Wand2 className="h-4 w-4" />
+                  {t.aiRevise}
+                </>
+              )}
+            </button>
+          )}
+
           <button
             type="button"
             onClick={exportDraft}
@@ -230,7 +274,11 @@ export function ContentStudioClient({ initialDrafts }: { initialDrafts: ContentD
           </span>
         </div>
         <ComplianceFlagList flags={flags} />
-        {message ? <p className="text-sm font-medium text-muted-foreground">{message}</p> : null}
+        {message ? (
+          <p className={cn("text-sm font-medium", complianceStatus === "pending" && message === t.aiRevisedNotice ? "text-amber-700 dark:text-amber-400" : "text-muted-foreground")}>
+            {message}
+          </p>
+        ) : null}
       </main>
     </div>
   );
