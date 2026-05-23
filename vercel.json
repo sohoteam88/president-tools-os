@@ -1,0 +1,12 @@
+{
+  "crons": [
+    {
+      "path": "/api/crons/daily-coach",
+      "schedule": "0 0 * * *"
+    },
+    {
+      "path": "/api/crons/weekly-compile",
+      "schedule": "0 1 * * 0"
+    }
+  ]
+}
