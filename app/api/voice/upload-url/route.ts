@@ -26,7 +26,7 @@ export async function POST(request: NextRequest) {
     if (captureType === "why_story" && (await userDb.voice.getWhyStory())) {
       return NextResponse.json({ error: "Your Why Story is already locked in" }, { status: 409 });
     }
-    if (captureType === "daily_journey" && (await userDb.voice.countTodayDailyJourneys()) >= 3) {
+    if (captureType === "daily_journey" && (await userDb.voice.countTodayDailyJourneys()) >= 10) {
       return NextResponse.json({ error: "Daily Journey limit reached" }, { status: 429 });
     }
 
