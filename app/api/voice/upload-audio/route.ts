@@ -1,23 +1,26 @@
 /**
  * POST /api/voice/upload-audio
  *
- * Accepts a multipart/form-data audio blob + metadata, uploads it to R2
- * server-side (no browser→R2 CORS required), and enqueues transcription.
+ * Accepts multipart/form-data (audio + captureType + durationSeconds),
+ * uploads to R2 server-side (no browser→R2 CORS), then kicks off Whisper
+ * transcription directly in-process instead of via a queue.
  *
- * Replaces the former 3-step browser flow:
- *   1. POST /api/voice/upload-url  → presigned URL
- *   2. PUT  <r2-presigned-url>     → CORS-blocked in most browsers
- *   3. POST /api/voice/confirm-upload
+ * Flow:
+ *   1. Validate + upload to R2               (awaited, ~1-3 s)
+ *   2. Return { captureId } to client        (immediate)
+ *   3. transcribeCapture() runs async        (~15-30 s, fire-and-forget)
+ *   4. Client polls /api/voice/status/:id    until status === "accepted"
  *
- * Returns: { captureId: string }
- * Client then polls GET /api/voice/status/[captureId] as before.
+ * Why fire-and-forget instead of await?  Whisper can take 30+ seconds on long
+ * recordings; we don't want to hold the HTTP connection that long. PM2 keeps
+ * the Node process alive so the async work completes even after response.
  */
 
 import { NextRequest, NextResponse } from "next/server";
 import { getAccountFromSession } from "@/lib/auth/session";
 import { scopedDb } from "@/lib/db/scoped";
 import { uploadBytes, getPublicUrl, r2KeyForCapture } from "@/lib/storage/r2";
-import { transcriptionQueue } from "@/lib/jobs/queues";
+import { transcribeCapture } from "@/lib/voice/transcription";
 import { captureTypeSchema } from "@/lib/validators/voice";
 
 const MAX_AUDIO_BYTES = 25 * 1024 * 1024; // 25 MB
@@ -27,7 +30,6 @@ export async function POST(request: NextRequest) {
     const account = await getAccountFromSession();
     if (!account) return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
 
-    // --- Parse multipart form data ---
     const contentType = request.headers.get("content-type") ?? "";
     if (!contentType.includes("multipart/form-data")) {
       return NextResponse.json({ error: "Expected multipart/form-data" }, { status: 400 });
@@ -63,7 +65,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Invalid durationSeconds" }, { status: 400 });
     }
 
-    // --- Business-rule guards (same as upload-url route) ---
+    // Business-rule guards
     const userDb = scopedDb(account.id);
 
     if (captureType === "why_story" && (durationSeconds < 60 || durationSeconds > 600)) {
@@ -78,14 +80,11 @@ export async function POST(request: NextRequest) {
     if (captureType === "why_story" && (await userDb.voice.getWhyStory())) {
       return NextResponse.json({ error: "Your Why Story is already locked in" }, { status: 409 });
     }
-    if (
-      captureType === "daily_journey" &&
-      (await userDb.voice.countTodayDailyJourneys()) >= 3
-    ) {
+    if (captureType === "daily_journey" && (await userDb.voice.countTodayDailyJourneys()) >= 3) {
       return NextResponse.json({ error: "Daily Journey limit reached" }, { status: 429 });
     }
 
-    // --- Create DB record ---
+    // Create DB record
     const capture = await userDb.voice.createCapture({
       type: captureType,
       status: "uploading",
@@ -95,7 +94,7 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({ error: "Failed to create capture record" }, { status: 500 });
     }
 
-    // --- Upload audio to R2 server-side (no CORS needed) ---
+    // Upload to R2 server-side (no CORS)
     const r2Key = r2KeyForCapture(account.id, capture.id);
     const audioBytes = new Uint8Array(await audioField.arrayBuffer());
     await uploadBytes(r2Key, audioBytes, "audio/webm");
@@ -106,14 +105,15 @@ export async function POST(request: NextRequest) {
       status: "transcribing",
     });
 
-    // --- Enqueue transcription job ---
-    const job = await transcriptionQueue.add("transcribe", {
+    // Fire transcription in background — don't await (Whisper takes 15-30 s).
+    // PM2 keeps the process alive so this resolves even after the response.
+    void transcribeCapture({
       captureId: capture.id,
       accountId: account.id,
       r2Key,
     });
-    await userDb.voice.updateCapture(capture.id, { jobId: job.id });
 
+    // Return immediately — client polls /api/voice/status/:id
     return NextResponse.json({ data: { captureId: capture.id } });
   } catch (error) {
     const message = error instanceof Error ? error.message : "Upload failed";
