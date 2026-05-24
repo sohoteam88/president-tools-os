@@ -505,6 +505,12 @@ export function scopedDb(accountId: string) {
         return moment;
       },
 
+      deleteMoment: async (momentId: string): Promise<void> => {
+        await db
+          .delete(journeyMoments)
+          .where(and(eq(journeyMoments.id, momentId), eq(journeyMoments.accountId, accountId)));
+      },
+
       listConfirmedMoments: async (limit = 50): Promise<JourneyMoment[]> => {
         return db
           .select()
