@@ -3,6 +3,7 @@
 import { useEffect, useRef, useState } from "react";
 import { Mic, RotateCcw, Check, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useLanguage } from "@/lib/i18n";
 
 type RecorderState =
   | "idle"
@@ -38,6 +39,7 @@ export function AudioRecorder({
   disabled,
   disabledReason,
 }: AudioRecorderProps) {
+  const { t } = useLanguage();
   const [state, setState] = useState<RecorderState>("idle");
   const [seconds, setSeconds] = useState(0);
   const [audioUrl, setAudioUrl] = useState<string | null>(null);
@@ -81,7 +83,7 @@ export function AudioRecorder({
       setState("recording");
       recorder.start();
     } catch {
-      setError("Microphone access denied. Please allow microphone access and try again.");
+      setError(t.micAccessDenied);
       setState("error");
     }
   }
@@ -102,12 +104,11 @@ export function AudioRecorder({
   async function uploadRecording() {
     if (!blob) return;
     if (seconds < minSeconds) {
-      setError(`Recording must be at least ${formatTime(minSeconds)}.`);
+      setError(t.recordingTooShort);
       return;
     }
 
     try {
-      // --- Single server-side upload route (no browser→R2 CORS required) ---
       setState("uploading");
       const form = new FormData();
       form.append("audio", blob, "voice.webm");
@@ -123,12 +124,11 @@ export function AudioRecorder({
         error?: string;
       };
       if (!uploadResponse.ok || !uploadBody.data) {
-        throw new Error(uploadBody.error ?? "Upload failed");
+        throw new Error(uploadBody.error ?? t.transcribeFailed);
       }
 
       const { captureId } = uploadBody.data;
 
-      // --- Poll for transcription completion ---
       setState("transcribing");
       const interval = window.setInterval(async () => {
         const statusResponse = await fetch(`/api/voice/status/${captureId}`);
@@ -151,12 +151,12 @@ export function AudioRecorder({
         }
         if (status === "failed") {
           window.clearInterval(interval);
-          setError(statusBody.data?.error_message ?? "Transcription failed");
+          setError(statusBody.data?.error_message ?? t.transcribeFailed);
           setState("error");
         }
       }, 3000);
     } catch (caught) {
-      setError(caught instanceof Error ? caught.message : "Upload failed");
+      setError(caught instanceof Error ? caught.message : t.transcribeFailed);
       setState("error");
     }
   }
@@ -216,7 +216,7 @@ export function AudioRecorder({
             className="inline-flex items-center gap-2 rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground"
           >
             <Check className="h-4 w-4" />
-            Use This Recording
+            {t.useThisRecording}
           </button>
           <button
             type="button"
@@ -224,7 +224,7 @@ export function AudioRecorder({
             className="inline-flex items-center gap-2 rounded-md border border-border px-3 py-2 text-sm font-medium"
           >
             <RotateCcw className="h-4 w-4" />
-            Record Again
+            {t.recordAgain}
           </button>
         </div>
       ) : null}
@@ -232,12 +232,12 @@ export function AudioRecorder({
       {isBusy ? (
         <p className="inline-flex items-center gap-2 text-sm text-muted-foreground">
           <Loader2 className="h-4 w-4 animate-spin" />
-          {state === "uploading" ? "Uploading audio..." : "Transcribing..."}
+          {state === "uploading" ? t.uploadingAudio : t.transcribingAnswer}
         </p>
       ) : null}
 
       {state === "done" ? (
-        <p className="text-sm font-medium text-emerald-700">Transcript accepted.</p>
+        <p className="text-sm font-medium text-emerald-700">{t.transcriptAccepted}</p>
       ) : null}
       {error ? <p className="text-sm font-medium text-red-700">{error}</p> : null}
     </div>

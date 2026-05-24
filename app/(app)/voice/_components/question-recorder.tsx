@@ -84,7 +84,7 @@ export function QuestionRecorder({
       setState("recording");
       recorder.start();
     } catch {
-      setError("Microphone access denied. Please allow microphone access and try again.");
+      setError(t.micAccessDenied);
       setState("error");
     }
   }
