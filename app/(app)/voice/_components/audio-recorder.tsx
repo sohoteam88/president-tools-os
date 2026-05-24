@@ -62,23 +62,28 @@ export function AudioRecorder({
 
   async function startRecording() {
     setError(null);
-    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-    const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
-    chunksRef.current = [];
-    recorder.ondataavailable = (event) => {
-      if (event.data.size > 0) chunksRef.current.push(event.data);
-    };
-    recorder.onstop = () => {
-      const nextBlob = new Blob(chunksRef.current, { type: "audio/webm" });
-      setBlob(nextBlob);
-      setAudioUrl(URL.createObjectURL(nextBlob));
-      stream.getTracks().forEach((track) => track.stop());
-      setState("recorded");
-    };
-    mediaRecorderRef.current = recorder;
-    setSeconds(0);
-    setState("recording");
-    recorder.start();
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const recorder = new MediaRecorder(stream, { mimeType: "audio/webm" });
+      chunksRef.current = [];
+      recorder.ondataavailable = (event) => {
+        if (event.data.size > 0) chunksRef.current.push(event.data);
+      };
+      recorder.onstop = () => {
+        const nextBlob = new Blob(chunksRef.current, { type: "audio/webm" });
+        setBlob(nextBlob);
+        setAudioUrl(URL.createObjectURL(nextBlob));
+        stream.getTracks().forEach((track) => track.stop());
+        setState("recorded");
+      };
+      mediaRecorderRef.current = recorder;
+      setSeconds(0);
+      setState("recording");
+      recorder.start();
+    } catch {
+      setError("Microphone access denied. Please allow microphone access and try again.");
+      setState("error");
+    }
   }
 
   async function stopRecording() {
@@ -102,45 +107,44 @@ export function AudioRecorder({
     }
 
     try {
+      // --- Single server-side upload route (no browser→R2 CORS required) ---
       setState("uploading");
-      const uploadResponse = await fetch("/api/voice/upload-url", {
+      const form = new FormData();
+      form.append("audio", blob, "voice.webm");
+      form.append("captureType", captureType);
+      form.append("durationSeconds", String(seconds));
+
+      const uploadResponse = await fetch("/api/voice/upload-audio", {
         method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ captureType, durationSeconds: seconds }),
+        body: form,
       });
       const uploadBody = (await uploadResponse.json()) as {
-        data?: { captureId: string; uploadUrl: string };
+        data?: { captureId: string };
         error?: string;
       };
       if (!uploadResponse.ok || !uploadBody.data) {
-        throw new Error(uploadBody.error ?? "Could not prepare upload");
+        throw new Error(uploadBody.error ?? "Upload failed");
       }
 
-      await fetch(uploadBody.data.uploadUrl, {
-        method: "PUT",
-        headers: { "content-type": "audio/webm" },
-        body: blob,
-      });
+      const { captureId } = uploadBody.data;
 
+      // --- Poll for transcription completion ---
       setState("transcribing");
-      const confirmResponse = await fetch("/api/voice/confirm-upload", {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ captureId: uploadBody.data.captureId }),
-      });
-      if (!confirmResponse.ok) throw new Error("Could not start transcription");
-
       const interval = window.setInterval(async () => {
-        const statusResponse = await fetch(`/api/voice/status/${uploadBody.data?.captureId}`);
+        const statusResponse = await fetch(`/api/voice/status/${captureId}`);
         const statusBody = (await statusResponse.json()) as {
-          data?: { status: string; transcript: string | null; error_message?: string | null };
+          data?: {
+            status: string;
+            transcript: string | null;
+            error_message?: string | null;
+          };
         };
         const status = statusBody.data?.status;
         if (status === "accepted") {
           window.clearInterval(interval);
           setState("done");
           if (onComplete) {
-            onComplete(uploadBody.data?.captureId ?? "", statusBody.data?.transcript ?? "");
+            onComplete(captureId, statusBody.data?.transcript ?? "");
           } else {
             window.location.reload();
           }
@@ -232,7 +236,9 @@ export function AudioRecorder({
         </p>
       ) : null}
 
-      {state === "done" ? <p className="text-sm font-medium text-emerald-700">Transcript accepted.</p> : null}
+      {state === "done" ? (
+        <p className="text-sm font-medium text-emerald-700">Transcript accepted.</p>
+      ) : null}
       {error ? <p className="text-sm font-medium text-red-700">{error}</p> : null}
     </div>
   );
